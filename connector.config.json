@@ -520,7 +520,7 @@
   },
   "source": {
     "marketplaceId": "irodori.mongodb",
-    "repository": "https://github.com/hjosugi/irodori-extension-mongodb",
+    "repository": "https://github.com/irodori-table/irodori-extension-mongodb",
     "knowledgeEngineStatus": "verified",
     "adapter": "db/mongo.rs",
     "adapterSha256": "7dd5843e37ef37c30d857aceebc37c86f90d0c1d38abac2174f68db25157c2b2",
