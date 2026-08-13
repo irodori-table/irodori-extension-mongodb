@@ -441,12 +441,135 @@ fn build_uri(request: &Value) -> String {
     let database = option_string(request, &["database", "db"]).unwrap_or_default();
     let username = option_string(request, &["user", "username"]);
     let password = option_string(request, &["password"]);
+    // MongoDB requires the userinfo component to be percent-encoded. A password
+    // containing `@`, `:`, `/` or `?` — all of which a generated password may —
+    // otherwise silently reshapes the URI and the connection fails somewhere
+    // unrelated, or worse, against a different host.
     let auth = match (username, password) {
-        (Some(username), Some(password)) => format!("{username}:{password}@"),
-        (Some(username), None) => format!("{username}@"),
+        (Some(username), Some(password)) => format!(
+            "{}:{}@",
+            percent_encode_userinfo(&username),
+            percent_encode_userinfo(&password)
+        ),
+        (Some(username), None) => format!("{}@", percent_encode_userinfo(&username)),
         _ => String::new(),
     };
-    format!("mongodb://{auth}{host}:{port}/{database}")
+    let mut uri = format!("mongodb://{auth}{host}:{port}/{database}");
+    for (key, value) in auth_query_params(request) {
+        uri.push(if uri.contains('?') { '&' } else { '?' });
+        uri.push_str(&key);
+        uri.push('=');
+        uri.push_str(&value);
+    }
+    uri
+}
+
+/// Everything in the URI query string that decides *how* the client
+/// authenticates.
+///
+/// MongoDB expresses its authentication mechanisms as URI parameters rather
+/// than as driver API calls, so this is where the declared methods live:
+/// `MONGODB-X509` for a certificate identity, `PLAIN` for LDAP, `MONGODB-OIDC`
+/// for OIDC. Each also needs `authSource=$external`, which is the part that is
+/// easy to forget and produces an authentication failure that names the wrong
+/// thing.
+///
+/// Pure so the whole mapping can be asserted on without a server.
+fn auth_query_params(request: &Value) -> Vec<(String, String)> {
+    let mut params: Vec<(String, String)> = Vec::new();
+
+    let certificate = option_string(
+        request,
+        &[
+            "tlsCertificateKeyFile",
+            "sslCert",
+            "sslcert",
+            "clientCert",
+            "certificateKeyFile",
+        ],
+    );
+    let mechanism = option_string(request, &["authMechanism", "authenticationMechanism"])
+        .map(|value| value.trim().to_ascii_uppercase())
+        .or_else(|| certificate.as_ref().map(|_| "MONGODB-X509".to_string()));
+
+    if let Some(mechanism) = mechanism.as_deref() {
+        params.push(("authMechanism".to_string(), mechanism.to_string()));
+    }
+
+    // X.509, LDAP (PLAIN), and OIDC all authenticate against the $external
+    // database rather than a database in the deployment. An explicit
+    // authSource still wins.
+    //
+    // GSSAPI is deliberately absent: the Rust driver has no Kerberos support at
+    // all, so a branch for it here would imply a capability that does not
+    // exist. `kerberos` should come out of connector.config.json rather than be
+    // half-accommodated — see the PR discussion.
+    let external = matches!(
+        mechanism.as_deref(),
+        Some("MONGODB-X509") | Some("PLAIN") | Some("MONGODB-OIDC")
+    );
+    match option_string(request, &["authSource", "authdb"]) {
+        Some(source) => params.push(("authSource".to_string(), source)),
+        None if external => params.push(("authSource".to_string(), "$external".to_string())),
+        None => {}
+    }
+
+    if let Some(properties) = option_string(
+        request,
+        &[
+            "authMechanismProperties",
+            "authenticationMechanismProperties",
+        ],
+    ) {
+        params.push(("authMechanismProperties".to_string(), properties));
+    }
+
+    // A certificate identity is only meaningful over TLS, so asking for one
+    // turns TLS on rather than failing later with a mechanism the server never
+    // offered.
+    if let Some(certificate) = certificate {
+        params.push(("tls".to_string(), "true".to_string()));
+        params.push((
+            "tlsCertificateKeyFile".to_string(),
+            percent_encode_userinfo(&certificate),
+        ));
+    }
+    if let Some(ca) = option_string(
+        request,
+        &["tlsCAFile", "sslRootCert", "sslrootcert", "caCert"],
+    ) {
+        params.push(("tls".to_string(), "true".to_string()));
+        params.push(("tlsCAFile".to_string(), percent_encode_userinfo(&ca)));
+    }
+
+    // `tls=true` twice is legal but noisy; keep the first of each key.
+    let mut seen = Vec::new();
+    params.retain(|(key, _)| {
+        if seen.iter().any(|existing| existing == key) {
+            false
+        } else {
+            seen.push(key.clone());
+            true
+        }
+    });
+    params
+}
+
+/// Percent-encode everything outside the RFC 3986 unreserved set.
+///
+/// Deliberately conservative — over-encoding a path or a username is harmless,
+/// under-encoding one changes what the URI means.
+fn percent_encode_userinfo(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 fn database_from_uri(uri: &str) -> Option<String> {
@@ -577,5 +700,106 @@ mod tests {
         let config = MongoConfig::from_request(&request).unwrap();
         assert_eq!(config.uri, "mongodb://u:p@mongo.local:27018/app");
         assert_eq!(config.database, "app");
+    }
+
+    fn uri(options: Value) -> String {
+        build_uri(
+            &json!({ "profile": { "host": "mongo.local", "database": "samples", "options": options } }),
+        )
+    }
+
+    #[test]
+    fn userinfo_is_percent_encoded() {
+        // A password containing `@` or `/` otherwise reshapes the URI — the
+        // client would parse a different host and fail somewhere unrelated.
+        let built = build_uri(&json!({
+            "profile": {
+                "host": "mongo.local",
+                "database": "samples",
+                "user": "svc/reader",
+                "password": "p@ss:word/1"
+            }
+        }));
+        assert_eq!(
+            built,
+            "mongodb://svc%2Freader:p%40ss%3Aword%2F1@mongo.local:27017/samples"
+        );
+    }
+
+    #[test]
+    fn a_plain_profile_is_unchanged() {
+        assert_eq!(uri(json!({})), "mongodb://mongo.local:27017/samples");
+    }
+
+    #[test]
+    fn a_client_certificate_selects_x509_over_tls() {
+        // Supplying a certificate is unambiguous: it is only usable with
+        // MONGODB-X509, and only over TLS.
+        let built = uri(json!({ "tlsCertificateKeyFile": "/etc/ssl/client.pem" }));
+        assert!(built.contains("authMechanism=MONGODB-X509"), "{built}");
+        assert!(built.contains("authSource=$external"), "{built}");
+        assert!(built.contains("tls=true"), "{built}");
+        assert!(
+            built.contains("tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient.pem"),
+            "{built}"
+        );
+    }
+
+    #[test]
+    fn ldap_authenticates_against_external() {
+        // PLAIN against the deployment's own database is the classic LDAP
+        // misconfiguration; it fails with an error that names the wrong thing.
+        let built = uri(json!({ "authMechanism": "plain" }));
+        assert!(built.contains("authMechanism=PLAIN"), "{built}");
+        assert!(built.contains("authSource=$external"), "{built}");
+    }
+
+    #[test]
+    fn oidc_carries_its_mechanism_properties() {
+        let built = uri(json!({
+            "authMechanism": "MONGODB-OIDC",
+            "authMechanismProperties": "ENVIRONMENT:azure,TOKEN_RESOURCE:api://x"
+        }));
+        assert!(built.contains("authMechanism=MONGODB-OIDC"), "{built}");
+        assert!(built.contains("authSource=$external"), "{built}");
+        assert!(
+            built.contains("authMechanismProperties=ENVIRONMENT:azure,TOKEN_RESOURCE:api://x"),
+            "{built}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_auth_source_wins_over_the_external_default() {
+        let built = uri(json!({ "authMechanism": "PLAIN", "authSource": "admin" }));
+        assert!(built.contains("authSource=admin"), "{built}");
+        assert!(!built.contains("$external"), "{built}");
+    }
+
+    #[test]
+    fn scram_does_not_get_pushed_to_external() {
+        // The default mechanism authenticates against a real database; sending
+        // it to $external would break every existing profile.
+        let built = uri(json!({ "authMechanism": "SCRAM-SHA-256" }));
+        assert!(built.contains("authMechanism=SCRAM-SHA-256"), "{built}");
+        assert!(!built.contains("authSource"), "{built}");
+    }
+
+    #[test]
+    fn a_ca_file_turns_tls_on_once() {
+        let built = uri(json!({
+            "tlsCAFile": "/etc/ssl/ca.pem",
+            "tlsCertificateKeyFile": "/etc/ssl/client.pem"
+        }));
+        assert_eq!(built.matches("tls=true").count(), 1, "{built}");
+        assert!(built.contains("tlsCAFile=%2Fetc%2Fssl%2Fca.pem"), "{built}");
+    }
+
+    #[test]
+    fn an_explicit_connection_string_is_never_rebuilt() {
+        let config = MongoConfig::from_request(&json!({
+            "profile": { "connectionString": "mongodb+srv://cluster/db?retryWrites=true" }
+        }))
+        .unwrap();
+        assert_eq!(config.uri, "mongodb+srv://cluster/db?retryWrites=true");
     }
 }
