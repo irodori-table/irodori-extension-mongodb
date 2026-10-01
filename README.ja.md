@@ -56,7 +56,6 @@ Rust クレートは `src/lib.rs` からネイティブ ABI をエクスポー�
 | `awsSso` | AWS IAM Identity Center / SSO | `iam` | `token` |
 | `webIdentity` | AWS ウェブアイデンティティ | `iam` | `token` |
 | `awsAssumeRole` | AWS STS ロール引き受け | `iam` | `token` |
-| `kerberos` | Kerberos / GSSAPI | `kerberos` | `token` |
 | `ldap` | LDAP ユーザー/パスワード | `userPassword` | `password` |
 | `oidc` | OIDC / ワークロードアイデンティティ | `oauth2` | `token` |
 | `customDriverOptions` | カスタムドライバーオプション | `custom` | `password`, `token`, `privateKey`, `privateKeyPassphrase` |
