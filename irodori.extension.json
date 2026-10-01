@@ -353,27 +353,6 @@
               ]
             },
             {
-              "id": "kerberos",
-              "label": "Kerberos / GSSAPI",
-              "kind": "kerberos",
-              "secretPurposes": [
-                "token"
-              ],
-              "fields": [
-                {
-                  "id": "principal",
-                  "label": "Principal",
-                  "type": "string"
-                },
-                {
-                  "id": "keytab",
-                  "label": "Keytab",
-                  "type": "path",
-                  "secretPurpose": "privateKey"
-                }
-              ]
-            },
-            {
               "id": "ldap",
               "label": "LDAP user/password",
               "kind": "userPassword",

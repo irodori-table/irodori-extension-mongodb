@@ -60,7 +60,6 @@
       "awsSso",
       "webIdentity",
       "awsAssumeRole",
-      "kerberos",
       "ldap",
       "oidc:workloadIdentity",
       "customDriverOptions"
