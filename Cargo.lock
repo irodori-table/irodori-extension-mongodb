@@ -752,7 +752,7 @@ dependencies = [
 
 [[package]]
 name = "irodori-extension-mongodb"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "futures-util",
  "irodori-connector-abi",
