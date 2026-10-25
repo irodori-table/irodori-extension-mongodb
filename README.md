@@ -55,7 +55,6 @@ The connector advertises these authentication modes so clients can render the ri
 | `awsSso` | AWS IAM Identity Center / SSO | `iam` | `token` |
 | `webIdentity` | AWS web identity | `iam` | `token` |
 | `awsAssumeRole` | AWS STS assume role | `iam` | `token` |
-| `kerberos` | Kerberos / GSSAPI | `kerberos` | `token` |
 | `ldap` | LDAP user/password | `userPassword` | `password` |
 | `oidc` | OIDC / workload identity | `oauth2` | `token` |
 | `customDriverOptions` | Custom driver options | `custom` | `password`, `token`, `privateKey`, `privateKeyPassphrase` |
