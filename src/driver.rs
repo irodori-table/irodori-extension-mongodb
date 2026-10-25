@@ -494,8 +494,7 @@ fn auth_query_params(request: &Value) -> Vec<(String, String)> {
     //
     // GSSAPI is deliberately absent: the Rust driver has no Kerberos support at
     // all, so a branch for it here would imply a capability that does not
-    // exist. `kerberos` should come out of connector.config.json rather than be
-    // half-accommodated — see the PR discussion.
+    // exist.
     let external = matches!(
         mechanism.as_deref(),
         Some("MONGODB-X509") | Some("PLAIN") | Some("MONGODB-OIDC")
